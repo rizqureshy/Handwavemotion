@@ -11,8 +11,12 @@ fully bundled inside the extension (no network calls, nothing leaves your machin
 1. Clone this branch, or download it as a folder.
 2. Open `chrome://extensions`, enable **Developer mode** (top right).
 3. Click **Load unpacked** and select the repository folder (the one with `manifest.json`).
-4. Click the Handwave toolbar icon — the side panel opens. Allow camera access.
-5. Keep the panel open while you browse: it hosts the camera and shows what the
+4. Click the Handwave toolbar icon — the side panel opens.
+5. First run: click **grant camera access** in the panel. Chrome side panels often
+   cannot show the camera permission prompt themselves, so this opens a small
+   extension tab where the prompt works; allow the camera there and the tab closes
+   itself. The permission sticks — from then on the panel connects silently.
+6. Keep the panel open while you browse: it hosts the camera and shows what the
    tracker sees, with your current gesture labelled live.
 
 ## Gestures

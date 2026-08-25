@@ -14,6 +14,7 @@ const modeEl = document.getElementById('mode');
 const zoomEl = document.getElementById('zoomLabel');
 const progressEl = document.getElementById('progress');
 const retryBtn = document.getElementById('retryCam');
+const grantBtn = document.getElementById('grantCam');
 const video = document.getElementById('cam');
 const preview = document.getElementById('preview');
 const pctx = preview.getContext('2d');
@@ -63,25 +64,64 @@ async function initTracking() {
   await initCamera();
 }
 
+async function useStream(stream) {
+  if (camReady) { stream.getTracks().forEach((t) => t.stop()); return; }
+  camReady = true;
+  video.srcObject = stream;
+  await video.play();
+  retryBtn.style.display = 'none';
+  grantBtn.style.display = 'none';
+  setStatus('show a hand to the camera ✋');
+}
+
+let camAttempt = 0;
 async function initCamera() {
+  const attempt = ++camAttempt;
   try {
     setStatus('requesting camera…');
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const gum = navigator.mediaDevices.getUserMedia({
       video: { width: 640, height: 480, facingMode: 'user' },
       audio: false,
     });
-    video.srcObject = stream;
-    await video.play();
-    camReady = true;
-    retryBtn.style.display = 'none';
-    setStatus('show a hand to the camera ✋');
+    // If the prompt hangs (side panels often can't render it) fail over to the
+    // grant page after 8s — but still adopt the stream if Allow comes late.
+    gum.then((s) => {
+      if (attempt !== camAttempt) s.getTracks().forEach((t) => t.stop());
+      else useStream(s);
+    }).catch(() => {});
+    const stream = await Promise.race([
+      gum,
+      new Promise((_, rej) => setTimeout(
+        () => rej(Object.assign(new Error('prompt timeout'), { name: 'TimeoutError' })), 8000)),
+    ]);
+    if (attempt !== camAttempt) return;
+    await useStream(stream);
   } catch (err) {
+    if (camReady || attempt !== camAttempt) return;
     console.warn('camera unavailable:', err);
-    setStatus('camera blocked or unavailable', 'error');
-    retryBtn.style.display = 'block';
+    // Side panels often cannot show the camera permission prompt at all, so
+    // getUserMedia is denied silently — the grant page (a normal tab) can.
+    if (err.name === 'NotAllowedError' || err.name === 'TimeoutError') {
+      setStatus('camera permission needed — use “grant camera access”', 'error');
+      grantBtn.style.display = 'inline-block';
+      retryBtn.style.display = 'inline-block';
+    } else if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
+      setStatus('no camera detected on this computer', 'error');
+      retryBtn.style.display = 'inline-block';
+    } else if (err.name === 'NotReadableError' || err.name === 'AbortError') {
+      setStatus('camera is in use by another app — close it, then retry', 'error');
+      retryBtn.style.display = 'inline-block';
+    } else {
+      setStatus(`camera error: ${err.name || err}`, 'error');
+      grantBtn.style.display = 'inline-block';
+      retryBtn.style.display = 'inline-block';
+    }
   }
 }
 retryBtn.addEventListener('click', initCamera);
+grantBtn.addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('grant.html') });
+});
 initTracking();
 
 // -------------------------------------------------------- pose classification
@@ -146,11 +186,17 @@ async function sendToTab(msg) {
   }
 }
 
-// The content script tells us when its ✕ key closed the keyboard.
+// Messages from our other pages: the keyboard's ✕ key, and the grant page
+// reporting that the camera permission was just granted.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.hw && msg.t === 'kbdClosed') {
+  if (!msg?.hw) return;
+  if (msg.t === 'kbdClosed') {
     kbdOn = false;
     window.__hwState.kbd = false;
+  } else if (msg.t === 'camGranted' && !camReady) {
+    // Reload rather than retry: a pending (never-rendered) permission prompt
+    // in this document would queue any new getUserMedia call forever.
+    location.reload();
   }
 });
 
