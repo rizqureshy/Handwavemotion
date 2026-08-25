@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>Handwave</title>
+<style>
+  html, body {
+    margin: 0;
+    background: #04050c;
+    color: #dfe6ff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+  }
+  body { padding: 14px; }
+  h1 {
+    margin: 0 0 2px;
+    font-size: 17px;
+    font-weight: 300;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: #cdd8ff;
+  }
+  #status {
+    min-height: 17px;
+    color: #8fa0c8;
+    margin-bottom: 10px;
+  }
+  #status.tracking { color: #7ef0c9; }
+  #status.error { color: #ff9d9d; }
+
+  #modeRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  #mode {
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid rgba(150, 170, 255, 0.3);
+    color: #9fb0d8;
+    background: rgba(20, 24, 44, 0.7);
+  }
+  #mode.active { color: #04050c; background: #7ef0c9; border-color: #7ef0c9; }
+  #zoomLabel { color: #6d7ba2; font-size: 12px; }
+
+  #preview {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 12px;
+    border: 1px solid rgba(150, 170, 255, 0.25);
+    background: #0a0c18;
+    display: block;
+  }
+  #progressWrap {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(150, 170, 255, 0.15);
+    margin: 8px 0 2px;
+    overflow: hidden;
+  }
+  #progress {
+    height: 100%;
+    width: 0%;
+    background: #c9a2ff;
+    border-radius: 2px;
+    transition: width 0.08s linear;
+  }
+
+  #retryCam {
+    display: none;
+    margin: 8px 0;
+    font: 12px system-ui, sans-serif;
+    color: #93a3cc;
+    background: rgba(20, 24, 44, 0.7);
+    border: 1px solid rgba(150, 170, 255, 0.2);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+
+  .legend {
+    list-style: none;
+    margin: 14px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .legend li {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    color: #8fa0c8;
+    line-height: 1.35;
+  }
+  .legend .g {
+    flex: 0 0 44px;
+    font-size: 16px;
+    text-align: center;
+  }
+  .legend b { color: #cdd8ff; font-weight: 600; }
+  #note {
+    margin-top: 14px;
+    color: #5d6a8f;
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  video { position: absolute; width: 2px; visibility: hidden; }
+</style>
+</head>
+<body>
+  <h1>Handwave</h1>
+  <div id="status">warming up…</div>
+  <div id="modeRow">
+    <span id="mode">idle</span>
+    <span id="zoomLabel">zoom 100%</span>
+  </div>
+  <canvas id="preview" width="640" height="480"></canvas>
+  <div id="progressWrap"><div id="progress"></div></div>
+  <button id="retryCam">retry camera</button>
+  <ul class="legend">
+    <li><span class="g">☝️</span><span><b>Point</b> — a hand moves the on-page cursor</span></li>
+    <li><span class="g">🤏</span><span><b>Pinch-tap</b> (thumb+index, other fingers open) — click, or press the hovered key</span></li>
+    <li><span class="g">✊</span><span><b>Grab &amp; drag</b> — scroll the page like grabbing paper</span></li>
+    <li><span class="g">🤏🤏</span><span><b>Both hands pinch &amp; stretch</b> — zoom the page in/out</span></li>
+    <li><span class="g">✌️</span><span><b>Hold peace sign</b> — summon / dismiss the keyboard</span></li>
+  </ul>
+  <div id="note">Works on regular web pages (not chrome:// pages or the Web Store). Keep the panel open while you browse — it is the camera host.</div>
+  <video id="cam" playsinline muted></video>
+<script type="module" src="sidepanel.js"></script>
+</body>
+</html>
