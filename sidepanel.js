@@ -311,7 +311,10 @@ function resetInteractions(now) {
 function endScroll() {
   scroll.active = false;
   if (Math.hypot(scroll.vx, scroll.vy) > FLING_MIN) {
-    sendToTab({ t: 'fling', vx: scroll.vx, vy: scroll.vy });
+    sendToTab({
+      t: 'fling', vx: scroll.vx, vy: scroll.vy,
+      x: scroll.last?.sx ?? 0.5, y: scroll.last?.sy ?? 0.5,
+    });
   }
   scroll.vx = scroll.vy = 0;
   scroll.last = null;
@@ -432,7 +435,8 @@ function step(hands, now, dt) {
       scroll.vx = 0.7 * scroll.vx + 0.3 * (-dx / fdt);
       scroll.vy = 0.7 * scroll.vy + 0.3 * (-dy / fdt);
       if (Math.abs(dx) > 0.4 || Math.abs(dy) > 0.4) {
-        sendToTab({ t: 'scroll', dx: -dx, dy: -dy });
+        // position included so the page can scroll the component under the hand
+        sendToTab({ t: 'scroll', dx: -dx, dy: -dy, x: smoothed.palm.sx, y: smoothed.palm.sy });
       }
       scroll.last = { ...smoothed.palm, t: now };
     }

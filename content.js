@@ -261,7 +261,7 @@
 
     const px = msg.x * window.innerWidth;
     const py = msg.y * window.innerHeight;
-    const el = document.elementFromPoint(px, py);
+    const el = deepElementFromPoint(document, px, py);
     if (!el) return;
     const opts = { bubbles: true, cancelable: true, view: window, clientX: px, clientY: py };
     el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
@@ -273,17 +273,92 @@
     else el.dispatchEvent(new MouseEvent('click', opts));
   }
 
+  // ---------------------------------------------------- scroll targeting
+  // A grab scrolls the scrollable component under the hand (piercing open
+  // shadow DOM and same-origin iframes), chaining leftover delta to ancestor
+  // scrollers and finally the window — like real touch scrolling. The target
+  // chain is resolved at grab start and locked for the whole drag.
+  let scrollSession = null; // {chain, win, t}
+
+  function deepElementFromPoint(doc, x, y) {
+    let el = doc.elementFromPoint(x, y);
+    let guard = 0;
+    while (el && el.shadowRoot && guard++ < 6) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  function resolveScrollSession(xf, yf) {
+    let win = window, doc = document;
+    let px = xf * win.innerWidth, py = yf * win.innerHeight;
+    let el = deepElementFromPoint(doc, px, py);
+    let hops = 0;
+    while (el && el.tagName === 'IFRAME' && hops++ < 4) {
+      let idoc = null;
+      try { idoc = el.contentDocument; } catch { idoc = null; } // cross-origin
+      if (!idoc) break;
+      const r = el.getBoundingClientRect();
+      px -= r.left; py -= r.top;
+      win = el.contentWindow; doc = idoc;
+      el = deepElementFromPoint(doc, px, py);
+    }
+    const chain = [];
+    let n = el;
+    while (n && n !== doc.body && n !== doc.documentElement) {
+      if (n.nodeType === 1) {
+        const s = win.getComputedStyle(n);
+        const canY = /(auto|scroll|overlay)/.test(s.overflowY) && n.scrollHeight > n.clientHeight + 1;
+        const canX = /(auto|scroll|overlay)/.test(s.overflowX) && n.scrollWidth > n.clientWidth + 1;
+        if (canY || canX) chain.push(n);
+      }
+      n = n.parentElement || n.parentNode?.host || null;
+    }
+    return { chain, win, t: performance.now() };
+  }
+
+  function getScrollSession(xf, yf) {
+    const now = performance.now();
+    if (scrollSession && now - scrollSession.t < 350) {
+      scrollSession.t = now;
+      return scrollSession;
+    }
+    scrollSession = resolveScrollSession(xf ?? 0.5, yf ?? 0.5);
+    return scrollSession;
+  }
+
+  function applyScroll(session, dx, dy) {
+    let rx = dx, ry = dy;
+    for (const el of session.chain) {
+      if (Math.abs(ry) > 0.1) {
+        const b = el.scrollTop;
+        el.scrollTo({ top: b + ry, left: el.scrollLeft, behavior: 'instant' });
+        ry -= el.scrollTop - b;
+      }
+      if (Math.abs(rx) > 0.1) {
+        const b = el.scrollLeft;
+        el.scrollTo({ left: b + rx, top: el.scrollTop, behavior: 'instant' });
+        rx -= el.scrollLeft - b;
+      }
+      if (Math.abs(rx) <= 0.1 && Math.abs(ry) <= 0.1) return;
+    }
+    session.win.scrollBy({ left: rx, top: ry, behavior: 'instant' });
+  }
+
   function cancelFling() {
     if (flingRaf) { cancelAnimationFrame(flingRaf); flingRaf = 0; }
   }
 
-  function fling(vx, vy) {
+  function fling(vx, vy, session) {
     cancelFling();
     let last = performance.now();
     const tick = (now) => {
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
-      window.scrollBy({ left: vx * dt, top: vy * dt, behavior: 'instant' });
+      session.t = now; // keep the grab's target alive for the whole fling
+      applyScroll(session, vx * dt, vy * dt);
       vx *= Math.pow(0.12, dt);
       vy *= Math.pow(0.12, dt);
       if (Math.hypot(vx, vy) > 40) flingRaf = requestAnimationFrame(tick);
@@ -301,10 +376,10 @@
         break;
       case 'scroll':
         cancelFling();
-        window.scrollBy({ left: msg.dx, top: msg.dy, behavior: 'instant' });
+        applyScroll(getScrollSession(msg.x, msg.y), msg.dx, msg.dy);
         break;
       case 'fling':
-        fling(msg.vx, msg.vy);
+        fling(msg.vx, msg.vy, getScrollSession(msg.x, msg.y));
         break;
       case 'press':
         pressAt(msg);

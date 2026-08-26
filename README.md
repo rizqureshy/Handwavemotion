@@ -25,7 +25,7 @@ fully bundled inside the extension (no network calls, nothing leaves your machin
 | --- | --- |
 | ☝️ Move a hand | Moves the on-page cursor (follows your index fingertip) |
 | 🤏 Pinch-tap (thumb+index touch, other fingers open) | Click whatever is under the cursor / press the hovered key |
-| ✊ Make a fist and drag | Scrolls the page like grabbing a sheet of paper; flick for momentum |
+| ✊ Make a fist and drag | Scrolls whatever is under your hand — inner panels, chat lists, dropdowns — chaining to the page when the component runs out; flick for momentum |
 | 🤏🤏 Pinch with both hands, stretch/squeeze | Zooms the page in/out (real Chrome zoom) |
 | ✌️ Hold a peace sign still (~1s) | Summons / dismisses the on-screen keyboard |
 | ✌️ Two-finger swipe right / left | Browser back / forward (like a trackpad swipe) |
@@ -54,6 +54,8 @@ enter, and a ✕ key to close it are included.
 
 - Works on regular web pages only — Chrome blocks extensions on `chrome://` pages and
   the Web Store.
+- Scrolling reaches into open shadow DOM and same-origin iframes; content inside
+  cross-origin iframes (some embeds) cannot be reached from the host page.
 - The side panel must stay open (it is the camera host).
 - Good lighting helps MediaPipe; the panel preview shows exactly what the tracker sees.
 
