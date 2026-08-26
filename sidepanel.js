@@ -237,15 +237,17 @@ function classify(lm, idx = 0) {
 
   const curled4 = !extI && !extM && !extR && !extP;
   const thumbOut = d(4, 5) / size > THUMB_OUT;
-  // In a fist the thumb also touches the index tip; a real pinch keeps the
-  // index reaching forward, a fist balls it up below the knuckle.
-  const deepIndexCurl = d(0, 8) < d(0, 5) * 0.95;
+  // A pinching finger still reaches forward — its tip stays at or beyond the
+  // middle joint. In a fist it curls past it. That separates ✊ from 🤏 even
+  // though both bring the thumb close to the fingertips.
+  const indexReach = d(0, 8) > d(0, 6) * 1.05;
+  const middleReach = d(0, 12) > d(0, 10) * 1.05;
 
   let pose = 'point';
-  if (st.i && !deepIndexCurl) pose = 'pinch';
+  if (st.i && indexReach) pose = 'pinch';
   else if (curled4 && thumbOut) pose = 'thumb';
   else if (curled4) pose = 'fist';
-  else if (st.m) pose = 'pinch2';
+  else if (st.m && middleReach) pose = 'pinch2';
   else if (extI && extM && !extR && !extP) pose = 'peace';
   else if (extI && extM && extR && extP) pose = 'open';
 
@@ -394,6 +396,7 @@ let swipeTrail = [];
 let cursorHist = [];
 let lastNavAt = 0;
 let navLabelUntil = 0;
+let pressBlockUntil = 0; // no clicks right after a grab/flick/zoom ends
 
 function handDistance(a, b) {
   return Math.hypot(a.palm.sx - b.palm.sx, a.palm.sy - b.palm.sy);
@@ -503,6 +506,7 @@ function step(classified, now, dt) {
     setMode(`zoom ${Math.round((zoom.current || 1) * 100)}%`, true);
     window.__hwState.mode = 'zoom';
     sendToTab({ t: 'cursor', mode: 'none' });
+    pressBlockUntil = now + 350;
     return;
   }
   if (zoom.active || zoom.pending) { zoom.active = zoom.pending = false; }
@@ -545,6 +549,7 @@ function step(classified, now, dt) {
   // 👍 thumb-out: a sideways flick navigates back/forward — its own pose, so
   // it can never fight the keyboard or ordinary cursor movement
   if (stablePose === 'thumb') {
+    pressBlockUntil = now + 350;
     swipeTrail.push({ ...smoothed.palm, t: now });
     const dir = detectSwipe(now);
     if (dir && now - lastNavAt > 1500) {
@@ -560,6 +565,7 @@ function step(classified, now, dt) {
   swipeTrail.length = 0;
 
   if (stablePose === 'fist') {
+    pressBlockUntil = now + 350;
     // grab & drag: the page content follows the hand
     if (!scroll.active) {
       scroll.active = true;
@@ -594,15 +600,26 @@ function step(classified, now, dt) {
   }
   const anchor = anchoredCursor(now);
 
+  // A press must not come right after a grab/flick/zoom (the hand passes
+  // through pinch-like shapes while opening), and needs a steady hand — a
+  // moving hand that happens to pinch is not a click.
   if (pinchNow && pressArmed.l) {
-    pressArmed.l = false;
-    sendToTab({ t: 'press', x: anchor.x, y: anchor.y });
+    if (now < pressBlockUntil) {
+      pressArmed.l = false; // swallow the transitional pinch entirely
+    } else if (cursorSteady(now)) {
+      pressArmed.l = false;
+      sendToTab({ t: 'press', x: anchor.x, y: anchor.y });
+    }
   } else if (!pinchNow) {
     pressArmed.l = true;
   }
   if (pinch2Now && pressArmed.r) {
-    pressArmed.r = false;
-    sendToTab({ t: 'press2', x: anchor.x, y: anchor.y });
+    if (now < pressBlockUntil) {
+      pressArmed.r = false;
+    } else if (cursorSteady(now)) {
+      pressArmed.r = false;
+      sendToTab({ t: 'press2', x: anchor.x, y: anchor.y });
+    }
   } else if (!pinch2Now) {
     pressArmed.r = true;
   }
@@ -617,6 +634,17 @@ function step(classified, now, dt) {
   const label = dictOn ? 'dictating 🎤' : stablePose === 'peace' ? 'dictation…' : 'point';
   setMode(label, true);
   window.__hwState.mode = label;
+}
+
+function cursorSteady(now) {
+  const recent = cursorHist[cursorHist.length - 1];
+  if (!recent) return true;
+  for (let i = cursorHist.length - 1; i >= 0; i--) {
+    if (now - cursorHist[i].t >= 250) {
+      return Math.hypot(recent.x - cursorHist[i].x, recent.y - cursorHist[i].y) < 0.07;
+    }
+  }
+  return true;
 }
 
 function anchoredCursor(now) {
