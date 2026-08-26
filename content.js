@@ -6,7 +6,8 @@
   if (window.__handwaveLoaded) return;
   window.__handwaveLoaded = true;
 
-  let host = null, shadow = null, cursorEl = null, kbdEl = null;
+  let host = null, shadow = null, cursorEl = null, kbdEl = null, navFlashEl = null;
+  let navFlashTimer = 0;
   let kbdVisible = false;
   let keyRects = [];        // {el, key, left, top, right, bottom}
   let hoverKeyEl = null;
@@ -64,6 +65,16 @@
       #cursor.grab { border-color: #ffb066; color: #ffb066; background: rgba(255,176,102,0.2); transform: scale(1.25); }
       #cursor.flash { animation: hwflash 0.25s; }
       @keyframes hwflash { 0% { transform: scale(1.6); } 100% { transform: scale(1); } }
+      #navFlash {
+        position: fixed; z-index: 1; top: 50%; width: 104px; height: 104px;
+        margin-top: -52px; display: flex; align-items: center; justify-content: center;
+        border-radius: 50%; font: 700 56px/1 system-ui, sans-serif;
+        color: #56d9ff; background: rgba(8, 10, 22, 0.65);
+        border: 1px solid rgba(86, 217, 255, 0.45);
+        box-shadow: 0 0 30px rgba(86, 217, 255, 0.35);
+        opacity: 0; transition: opacity 0.15s;
+      }
+      #navFlash.show { opacity: 1; }
       #kbd {
         position: fixed; z-index: 1; left: 50%; bottom: 20px; transform: translateX(-50%);
         display: none; flex-direction: column; gap: 6px;
@@ -98,6 +109,9 @@
     cursorEl = document.createElement('div');
     cursorEl.id = 'cursor';
     shadow.appendChild(cursorEl);
+    navFlashEl = document.createElement('div');
+    navFlashEl.id = 'navFlash';
+    shadow.appendChild(navFlashEl);
     buildKeyboard();
     (document.documentElement || document.body).appendChild(host);
   }
@@ -297,6 +311,15 @@
         break;
       case 'kbd':
         showKeyboard(msg.show);
+        break;
+      case 'navFlash':
+        ensureUi();
+        navFlashEl.textContent = msg.back ? '‹' : '›';
+        navFlashEl.style.left = msg.back ? '28px' : 'auto';
+        navFlashEl.style.right = msg.back ? 'auto' : '28px';
+        navFlashEl.classList.add('show');
+        clearTimeout(navFlashTimer);
+        navFlashTimer = setTimeout(() => navFlashEl.classList.remove('show'), 600);
         break;
     }
     sendResponse({ ok: true, kbd: kbdVisible });

@@ -27,7 +27,8 @@ fully bundled inside the extension (no network calls, nothing leaves your machin
 | 🤏 Pinch-tap (thumb+index touch, other fingers open) | Click whatever is under the cursor / press the hovered key |
 | ✊ Make a fist and drag | Scrolls the page like grabbing a sheet of paper; flick for momentum |
 | 🤏🤏 Pinch with both hands, stretch/squeeze | Zooms the page in/out (real Chrome zoom) |
-| ✌️ Hold a peace sign (~1s) | Summons / dismisses the on-screen keyboard |
+| ✌️ Hold a peace sign still (~1s) | Summons / dismisses the on-screen keyboard |
+| ✌️ Two-finger swipe right / left | Browser back / forward (like a trackpad swipe) |
 
 The on-screen keyboard types into whatever field has focus — pinch-tap an input first,
 then peace-sign to summon the keyboard, hover a key and pinch to press. Shift, backspace,

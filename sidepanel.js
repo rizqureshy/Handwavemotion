@@ -23,7 +23,8 @@ function setStatus(text, cls = '') {
   statusEl.textContent = text;
   statusEl.className = cls;
 }
-function setMode(text, active) {
+function setMode(text, active, hold = false) {
+  if (!hold && performance.now() < navLabelUntil) return; // keep "◀ back" visible briefly
   modeEl.textContent = text;
   modeEl.className = active ? 'active' : '';
 }
@@ -260,15 +261,45 @@ let peaceArmed = true;
 let pressArmed = true;
 let kbdOn = false;
 let lastHandSeen = 0;
+let swipeTrail = [];
+let lastNavAt = 0;
+let navLabelUntil = 0;
 
 function handDistance(a, b) {
   return Math.hypot(a.palm.sx - b.palm.sx, a.palm.sy - b.palm.sy);
+}
+
+// A fast, flat horizontal flick within the recent trail. Returns -1 (left),
+// 1 (right) or 0. Only evaluated in the two-finger pose, so ordinary cursor
+// movement can never trigger navigation.
+function detectSwipe(now) {
+  while (swipeTrail.length && now - swipeTrail[0].t > 350) swipeTrail.shift();
+  if (swipeTrail.length < 3) return 0;
+  const a = swipeTrail[0], b = swipeTrail[swipeTrail.length - 1];
+  const dx = b.sx - a.sx, dy = b.sy - a.sy;
+  if (Math.abs(dx) > 0.26 && Math.abs(dy) < 0.13) return Math.sign(dx);
+  return 0;
+}
+
+async function navigateHistory(dir) {
+  const back = dir > 0; // swipe right reveals the previous page, like a trackpad
+  navLabelUntil = performance.now() + 900;
+  setMode(back ? '◀ back' : 'forward ▶', true, true);
+  window.__hwState.mode = back ? 'back' : 'forward';
+  sendToTab({ t: 'navFlash', back });
+  try {
+    const tab = await getTargetTab();
+    if (!tab) return;
+    if (back) await chrome.tabs.goBack(tab.id);
+    else await chrome.tabs.goForward(tab.id);
+  } catch { /* no history entry in that direction */ }
 }
 
 function resetInteractions(now) {
   if (scroll.active) endScroll();
   zoom.active = zoom.pending = false;
   peaceHeld = 0;
+  swipeTrail.length = 0;
   progressEl.style.width = '0%';
   if (now - lastHandSeen > 400) {
     sendToTab({ t: 'cursor', mode: 'none', kbd: kbdOn });
@@ -359,9 +390,19 @@ function step(hands, now, dt) {
     }
   }
 
-  // peace-sign hold toggles the keyboard
+  // Two-finger pose: a quick sideways flick navigates back/forward; held
+  // still it toggles the keyboard.
   if (stablePose === 'peace') {
-    if (peaceArmed) {
+    swipeTrail.push({ ...smoothed.palm, t: now });
+    const dir = detectSwipe(now);
+    if (dir && now - lastNavAt > 1500) {
+      lastNavAt = now;
+      swipeTrail = [];
+      peaceHeld = 0;
+      peaceArmed = false; // a swipe must not also summon the keyboard
+      progressEl.style.width = '0%';
+      navigateHistory(dir);
+    } else if (peaceArmed) {
       peaceHeld += dt;
       progressEl.style.width = `${Math.min(100, (peaceHeld / PEACE_HOLD_S) * 100)}%`;
       if (peaceHeld >= PEACE_HOLD_S) {
@@ -373,6 +414,7 @@ function step(hands, now, dt) {
       }
     }
   } else {
+    swipeTrail.length = 0;
     peaceHeld = 0;
     peaceArmed = true;
     progressEl.style.width = '0%';
