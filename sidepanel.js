@@ -93,13 +93,23 @@ async function fallBackToCpu() {
 }
 
 async function useStream(stream) {
-  if (camReady) { stream.getTracks().forEach((t) => t.stop()); return; }
+  if (camReady) {
+    // Only discard a stream that is NOT the one already in use.
+    if (video.srcObject !== stream) stream.getTracks().forEach((t) => t.stop());
+    return;
+  }
   camReady = true;
   video.srcObject = stream;
   await video.play();
   retryBtn.style.display = 'none';
   grantBtn.style.display = 'none';
   setStatus('show a hand to the camera ✋');
+  stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+    if (video.srcObject !== stream) return; // superseded, not an error
+    camReady = false;
+    setStatus('camera stopped (OS or another app took it) — retry', 'error');
+    retryBtn.style.display = 'inline-block';
+  });
 }
 
 let camAttempt = 0;
@@ -113,17 +123,14 @@ async function initCamera() {
     });
     // If the prompt hangs (side panels often can't render it) fail over to the
     // grant page after 8s — but still adopt the stream if Allow comes late.
-    gum.then((s) => {
-      if (attempt !== camAttempt) s.getTracks().forEach((t) => t.stop());
-      else useStream(s);
-    }).catch(() => {});
-    const stream = await Promise.race([
+    // The .then below is the ONLY place a stream is adopted — the race is just
+    // for error timing, so the same stream can never be handled twice.
+    gum.then((s) => useStream(s)).catch(() => {});
+    await Promise.race([
       gum,
       new Promise((_, rej) => setTimeout(
         () => rej(Object.assign(new Error('prompt timeout'), { name: 'TimeoutError' })), 8000)),
     ]);
-    if (attempt !== camAttempt) return;
-    await useStream(stream);
   } catch (err) {
     if (camReady || attempt !== camAttempt) return;
     console.warn('camera unavailable:', err);
