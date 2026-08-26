@@ -3,10 +3,14 @@ import { FilesetResolver, HandLandmarker } from './vendor/tasks-vision/vision_bu
 // Gesture tuning
 const SCROLL_GAIN = 1600;      // page px per full camera-height of fist travel
 const FLING_MIN = 350;         // px/s of release velocity needed to fling
-const PINCH_RATIO = 0.45;      // thumb–index distance / hand size below this = pinch
+const PINCH_ENGAGE = 0.42;     // thumb–index distance / hand size to START a pinch
+const PINCH_RELEASE = 0.60;    // ...and the larger distance needed to END it (hysteresis)
+const PINCH2_ENGAGE = 0.40;    // thumb–middle distance to start a right-click pinch
+const THUMB_OUT = 0.85;        // thumb-tip-to-index-knuckle / hand size for 👍 pose
 const EXT_RATIO = 1.15;        // tip/pip wrist-distance ratio above this = finger extended
 const POSE_STABLE_FRAMES = 3;  // frames a pose must persist before it acts
 const PEACE_HOLD_S = 0.9;      // hold ✌️ this long to toggle the keyboard
+const CLICK_ANCHOR_MS = 160;   // clicks land where the cursor was this long ago
 const ZOOM_MIN = 0.4, ZOOM_MAX = 4;
 
 const statusEl = document.getElementById('status');
@@ -15,6 +19,7 @@ const zoomEl = document.getElementById('zoomLabel');
 const progressEl = document.getElementById('progress');
 const retryBtn = document.getElementById('retryCam');
 const grantBtn = document.getElementById('grantCam');
+const camSelect = document.getElementById('camSelect');
 const video = document.getElementById('cam');
 const preview = document.getElementById('preview');
 const pctx = preview.getContext('2d');
@@ -105,6 +110,7 @@ async function useStream(stream) {
   retryBtn.style.display = 'none';
   grantBtn.style.display = 'none';
   setStatus('show a hand to the camera ✋');
+  populateCameras(); // labels become available once a stream is granted
   stream.getVideoTracks()[0]?.addEventListener('ended', () => {
     if (video.srcObject !== stream) return; // superseded, not an error
     camReady = false;
@@ -113,13 +119,53 @@ async function useStream(stream) {
   });
 }
 
+// ---- camera selection: remembered per panel, switchable live
+function preferredCamera() {
+  try { return localStorage.getItem('hw-cam') || ''; } catch { return ''; }
+}
+
+async function populateCameras() {
+  try {
+    const cams = (await navigator.mediaDevices.enumerateDevices())
+      .filter((d) => d.kind === 'videoinput');
+    camSelect.innerHTML = '';
+    cams.forEach((c, i) => {
+      const opt = document.createElement('option');
+      opt.value = c.deviceId;
+      opt.textContent = c.label || `Camera ${i + 1}`;
+      camSelect.appendChild(opt);
+    });
+    const pref = preferredCamera();
+    if (pref && cams.some((c) => c.deviceId === pref)) camSelect.value = pref;
+    else if (video.srcObject) {
+      const activeId = video.srcObject.getVideoTracks()[0]?.getSettings().deviceId;
+      if (activeId) camSelect.value = activeId;
+    }
+    camSelect.style.display = cams.length > 1 ? 'inline-block' : 'none';
+  } catch { /* not fatal */ }
+}
+navigator.mediaDevices.addEventListener?.('devicechange', populateCameras);
+
+camSelect.addEventListener('change', () => {
+  try { localStorage.setItem('hw-cam', camSelect.value); } catch { /* ignore */ }
+  const old = video.srcObject;
+  camReady = false;
+  camAttempt++;
+  if (old) old.getTracks().forEach((t) => t.stop());
+  video.srcObject = null;
+  initCamera();
+});
+
 let camAttempt = 0;
 async function initCamera() {
   const attempt = ++camAttempt;
   try {
     setStatus('requesting camera…');
+    const pref = preferredCamera();
     const gum = navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: 'user' },
+      video: pref
+        ? { deviceId: { exact: pref }, width: 640, height: 480 }
+        : { width: 640, height: 480, facingMode: 'user' },
       audio: false,
     });
     // If the prompt hangs (side panels often can't render it) fail over to the
@@ -134,6 +180,12 @@ async function initCamera() {
     ]);
   } catch (err) {
     if (camReady || attempt !== camAttempt) return;
+    // a remembered camera that was unplugged: forget it and fall back
+    if ((err.name === 'OverconstrainedError' || err.name === 'NotFoundError') && preferredCamera()) {
+      try { localStorage.removeItem('hw-cam'); } catch { /* ignore */ }
+      initCamera();
+      return;
+    }
     console.warn('camera unavailable:', err);
     // Side panels often cannot show the camera permission prompt at all, so
     // getUserMedia is denied silently — the grant page (a normal tab) can.
@@ -165,18 +217,36 @@ initTracking();
 // All positions are converted to screen fractions: sx (0 left → 1 right,
 // mirrored so your hand moves like a mouse), sy (0 top → 1 bottom).
 const PALM_POINTS = [0, 5, 9, 13, 17];
+const pinchState = new Map(); // hand index -> {i, m} pinch hysteresis
 
-function classify(lm) {
+function classify(lm, idx = 0) {
   const d = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
   const size = d(0, 9) || 1e-3;
   const ext = (tip, pip) => d(0, tip) > d(0, pip) * EXT_RATIO;
   const extI = ext(8, 6), extM = ext(12, 10), extR = ext(16, 14), extP = ext(20, 18);
-  const pinching = d(4, 8) / size < PINCH_RATIO;
+
+  // Pinches use hysteresis so a click doesn't flicker on the threshold, and
+  // require nothing of the other fingers — any thumb+index touch is a click.
+  const ratI = d(4, 8) / size;
+  const ratM = d(4, 12) / size;
+  const st = pinchState.get(idx) || { i: false, m: false };
+  st.i = st.i ? ratI < PINCH_RELEASE : ratI < PINCH_ENGAGE;
+  st.m = st.m ? (ratM < PINCH_RELEASE && ratI > 0.5)
+              : (ratM < PINCH2_ENGAGE && ratI > 0.55);
+  pinchState.set(idx, st);
+
+  const curled4 = !extI && !extM && !extR && !extP;
+  const thumbOut = d(4, 5) / size > THUMB_OUT;
+  // In a fist the thumb also touches the index tip; a real pinch keeps the
+  // index reaching forward, a fist balls it up below the knuckle.
+  const deepIndexCurl = d(0, 8) < d(0, 5) * 0.95;
 
   let pose = 'point';
-  if (!extI && !extM && !extR && !extP) pose = 'fist';
-  else if (pinching && extM && extR) pose = 'pinch';
-  else if (extI && extM && !extR && !extP && !pinching) pose = 'peace';
+  if (st.i && !deepIndexCurl) pose = 'pinch';
+  else if (curled4 && thumbOut) pose = 'thumb';
+  else if (curled4) pose = 'fist';
+  else if (st.m) pose = 'pinch2';
+  else if (extI && extM && !extR && !extP) pose = 'peace';
   else if (extI && extM && extR && extP) pose = 'open';
 
   let px = 0, py = 0;
@@ -258,10 +328,11 @@ let scroll = { active: false, last: null, vx: 0, vy: 0 };
 let zoom = { active: false, pending: false, baseDist: 0, baseZoom: 1, lastSent: 0, current: 1 };
 let peaceHeld = 0;
 let peaceArmed = true;
-let pressArmed = true;
+let pressArmed = { l: true, r: true };
 let kbdOn = false;
 let lastHandSeen = 0;
 let swipeTrail = [];
+let cursorHist = [];
 let lastNavAt = 0;
 let navLabelUntil = 0;
 
@@ -277,7 +348,7 @@ function detectSwipe(now) {
   if (swipeTrail.length < 3) return 0;
   const a = swipeTrail[0], b = swipeTrail[swipeTrail.length - 1];
   const dx = b.sx - a.sx, dy = b.sy - a.sy;
-  if (Math.abs(dx) > 0.26 && Math.abs(dy) < 0.13) return Math.sign(dx);
+  if (Math.abs(dx) > 0.20 && Math.abs(dy) < 0.13) return Math.sign(dx);
   return 0;
 }
 
@@ -300,6 +371,7 @@ function resetInteractions(now) {
   zoom.active = zoom.pending = false;
   peaceHeld = 0;
   swipeTrail.length = 0;
+  cursorHist.length = 0;
   progressEl.style.width = '0%';
   if (now - lastHandSeen > 400) {
     sendToTab({ t: 'cursor', mode: 'none', kbd: kbdOn });
@@ -351,17 +423,16 @@ async function applyZoom(dist, now) {
   }
 }
 
-function step(hands, now, dt) {
-  if (hands.length === 0) {
+function step(classified, now, dt) {
+  if (classified.length === 0) {
     stablePose = rawPose = 'none';
     poseCount = 0;
     smoothed = null;
+    pinchState.clear();
     resetInteractions(now);
     return;
   }
   lastHandSeen = now;
-
-  const classified = hands.map(classify);
 
   // ---- two-handed pinch & stretch = zoom
   const pinched = classified.filter((h) => h.pose === 'pinch');
@@ -393,19 +464,9 @@ function step(hands, now, dt) {
     }
   }
 
-  // Two-finger pose: a quick sideways flick navigates back/forward; held
-  // still it toggles the keyboard.
+  // ✌️ held still toggles the keyboard — nothing else shares this pose now
   if (stablePose === 'peace') {
-    swipeTrail.push({ ...smoothed.palm, t: now });
-    const dir = detectSwipe(now);
-    if (dir && now - lastNavAt > 1500) {
-      lastNavAt = now;
-      swipeTrail = [];
-      peaceHeld = 0;
-      peaceArmed = false; // a swipe must not also summon the keyboard
-      progressEl.style.width = '0%';
-      navigateHistory(dir);
-    } else if (peaceArmed) {
+    if (peaceArmed) {
       peaceHeld += dt;
       progressEl.style.width = `${Math.min(100, (peaceHeld / PEACE_HOLD_S) * 100)}%`;
       if (peaceHeld >= PEACE_HOLD_S) {
@@ -417,11 +478,27 @@ function step(hands, now, dt) {
       }
     }
   } else {
-    swipeTrail.length = 0;
     peaceHeld = 0;
     peaceArmed = true;
     progressEl.style.width = '0%';
   }
+
+  // 👍 thumb-out: a sideways flick navigates back/forward — its own pose, so
+  // it can never fight the keyboard or ordinary cursor movement
+  if (stablePose === 'thumb') {
+    swipeTrail.push({ ...smoothed.palm, t: now });
+    const dir = detectSwipe(now);
+    if (dir && now - lastNavAt > 1500) {
+      lastNavAt = now;
+      swipeTrail = [];
+      navigateHistory(dir);
+    }
+    sendToTab({ t: 'cursor', x: smoothed.palm.sx, y: smoothed.palm.sy, mode: 'point', kbd: kbdOn });
+    setMode('flick ⇄ to navigate', true);
+    window.__hwState.mode = 'navigate';
+    return;
+  }
+  swipeTrail.length = 0;
 
   if (stablePose === 'fist') {
     // grab & drag: the page content follows the hand
@@ -447,19 +524,36 @@ function step(hands, now, dt) {
   }
   if (scroll.active) endScroll();
 
-  // pointer: cursor follows the index fingertip; pinch-tap presses
+  // pointer: cursor follows the index fingertip; pinch-taps press.
+  // Pinching physically moves the fingertip, so presses (and the cursor,
+  // while pinched) anchor to where the cursor was CLICK_ANCHOR_MS ago.
   const pinchNow = stablePose === 'pinch';
-  if (pinchNow && pressArmed) {
-    pressArmed = false;
-    sendToTab({ t: 'press', x: smoothed.tip.sx, y: smoothed.tip.sy });
-  } else if (!pinchNow && stablePose !== 'none') {
-    pressArmed = true;
+  const pinch2Now = stablePose === 'pinch2';
+  if (!pinchNow && !pinch2Now) {
+    cursorHist.push({ x: smoothed.tip.sx, y: smoothed.tip.sy, t: now });
+    while (cursorHist.length && now - cursorHist[0].t > 500) cursorHist.shift();
   }
+  const anchor = anchoredCursor(now);
+
+  if (pinchNow && pressArmed.l) {
+    pressArmed.l = false;
+    sendToTab({ t: 'press', x: anchor.x, y: anchor.y });
+  } else if (!pinchNow) {
+    pressArmed.l = true;
+  }
+  if (pinch2Now && pressArmed.r) {
+    pressArmed.r = false;
+    sendToTab({ t: 'press2', x: anchor.x, y: anchor.y });
+  } else if (!pinch2Now) {
+    pressArmed.r = true;
+  }
+
+  const frozen = pinchNow || pinch2Now;
   sendToTab({
     t: 'cursor',
-    x: smoothed.tip.sx,
-    y: smoothed.tip.sy,
-    mode: pinchNow ? 'pinch' : 'point',
+    x: frozen ? anchor.x : smoothed.tip.sx,
+    y: frozen ? anchor.y : smoothed.tip.sy,
+    mode: pinch2Now ? 'pinch2' : pinchNow ? 'pinch' : 'point',
     kbd: kbdOn,
   });
   const label = kbdOn ? 'keyboard' : stablePose === 'peace' ? 'keyboard…' : 'point';
@@ -467,11 +561,20 @@ function step(hands, now, dt) {
   window.__hwState.mode = label;
 }
 
+function anchoredCursor(now) {
+  for (let i = cursorHist.length - 1; i >= 0; i--) {
+    if (now - cursorHist[i].t >= CLICK_ANCHOR_MS) return cursorHist[i];
+  }
+  if (cursorHist.length) return cursorHist[0];
+  return { x: smoothed?.tip.sx ?? 0.5, y: smoothed?.tip.sy ?? 0.5 };
+}
+
 // ------------------------------------------------------------------ preview
 const POSE_COLORS = {
-  fist: '#ffb066', pinch: '#ff9ad5', peace: '#c9a2ff', open: '#7ef0c9', point: '#7ecbf0',
+  fist: '#ffb066', pinch: '#ff9ad5', pinch2: '#c9a2ff', peace: '#c9a2ff',
+  thumb: '#7ef0c9', open: '#7ef0c9', point: '#7ecbf0',
 };
-function drawPreview(hands) {
+function drawPreview(hands, classified) {
   const w = preview.width, h = preview.height;
   pctx.fillStyle = '#0a0c18';
   pctx.fillRect(0, 0, w, h);
@@ -482,8 +585,8 @@ function drawPreview(hands) {
     pctx.drawImage(video, 0, 0, w, h);
     pctx.restore();
   }
-  for (const lm of hands) {
-    const { pose } = classify(lm);
+  hands.forEach((lm, i) => {
+    const pose = classified[i]?.pose || 'point';
     pctx.fillStyle = POSE_COLORS[pose] || '#7ecbf0';
     for (const p of lm) {
       pctx.beginPath();
@@ -492,7 +595,7 @@ function drawPreview(hands) {
     }
     pctx.font = '600 20px system-ui';
     pctx.fillText(pose, (1 - lm[0].x) * w + 12, lm[0].y * h);
-  }
+  });
 }
 
 // ---------------------------------------------------------------- main loop
@@ -525,8 +628,9 @@ function loop(now) {
   }
   lastHands = hands;
 
-  step(hands, now, dt);
-  drawPreview(hands);
+  const classified = hands.map((lm, i) => classify(lm, i));
+  step(classified, now, dt);
+  drawPreview(hands, classified);
 
   if (hands.length !== lastHandCount) {
     lastHandCount = hands.length;

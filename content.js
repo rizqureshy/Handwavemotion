@@ -62,6 +62,7 @@
       #cursor { color: #56d9ff; }
       #cursor.show { opacity: 1; }
       #cursor.pinch { border-color: #ff9ad5; color: #ff9ad5; background: rgba(255,154,213,0.25); transform: scale(0.7); }
+      #cursor.pinch2 { border-color: #c9a2ff; color: #c9a2ff; background: rgba(201,162,255,0.25); transform: scale(0.7); }
       #cursor.grab { border-color: #ffb066; color: #ffb066; background: rgba(255,176,102,0.2); transform: scale(1.25); }
       #cursor.flash { animation: hwflash 0.25s; }
       @keyframes hwflash { 0% { transform: scale(1.6); } 100% { transform: scale(1); } }
@@ -178,7 +179,7 @@
     const py = msg.y * window.innerHeight;
     cursorEl.style.left = `${px}px`;
     cursorEl.style.top = `${py}px`;
-    cursorEl.className = `show ${msg.mode === 'pinch' ? 'pinch' : msg.mode === 'grab' ? 'grab' : ''}`;
+    cursorEl.className = `show ${['pinch', 'pinch2', 'grab'].includes(msg.mode) ? msg.mode : ''}`;
     if (kbdVisible) {
       const hit = keyRects.find((r) => px >= r.left && px <= r.right && py >= r.top && py <= r.bottom);
       setHover(hit ? hit.el : null);
@@ -271,6 +272,29 @@
     if (isEditable(el)) { el.focus(); lastEditable = el; }
     if (typeof el.click === 'function') el.click();
     else el.dispatchEvent(new MouseEvent('click', opts));
+  }
+
+  // Right-click: full right-button event sequence ending in contextmenu.
+  // Pages with their own context menus respond; Chrome's native menu cannot
+  // be opened by page-dispatched events.
+  function rightClickAt(msg) {
+    ensureUi();
+    cursorEl.classList.add('flash');
+    setTimeout(() => cursorEl.classList.remove('flash'), 260);
+    if (kbdVisible && hoverKeyEl) return; // no right-click on the keyboard
+    const px = msg.x * window.innerWidth;
+    const py = msg.y * window.innerHeight;
+    const el = deepElementFromPoint(document, px, py);
+    if (!el) return;
+    const opts = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: px, clientY: py, button: 2, buttons: 2,
+    };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new MouseEvent('contextmenu', opts));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
   }
 
   // ---------------------------------------------------- scroll targeting
@@ -383,6 +407,9 @@
         break;
       case 'press':
         pressAt(msg);
+        break;
+      case 'press2':
+        rightClickAt(msg);
         break;
       case 'kbd':
         showKeyboard(msg.show);

@@ -17,18 +17,21 @@ fully bundled inside the extension (no network calls, nothing leaves your machin
    extension tab where the prompt works; allow the camera there and the tab closes
    itself. The permission sticks — from then on the panel connects silently.
 6. Keep the panel open while you browse: it hosts the camera and shows what the
-   tracker sees, with your current gesture labelled live.
+   tracker sees, with your current gesture labelled live. If you have several
+   cameras, pick one from the dropdown under the preview — the choice is
+   remembered.
 
 ## Gestures
 
 | Gesture | Action |
 | --- | --- |
 | ☝️ Move a hand | Moves the on-page cursor (follows your index fingertip) |
-| 🤏 Pinch-tap (thumb+index touch, other fingers open) | Click whatever is under the cursor / press the hovered key |
+| 🤏 Thumb + index tap | Click / press the hovered key — clicks land where the cursor was just before the pinch, so aiming stays easy |
+| 🤏 Thumb + middle-finger tap | Right-click — sites with their own context menus respond (a page can't open Chrome's native menu) |
 | ✊ Make a fist and drag | Scrolls whatever is under your hand — inner panels, chat lists, dropdowns — chaining to the page when the component runs out; flick for momentum |
 | 🤏🤏 Pinch with both hands, stretch/squeeze | Zooms the page in/out (real Chrome zoom) |
-| ✌️ Hold a peace sign still (~1s) | Summons / dismisses the on-screen keyboard |
-| ✌️ Two-finger swipe right / left | Browser back / forward (like a trackpad swipe) |
+| ✌️ Hold a peace sign (~1s) | Summons / dismisses the on-screen keyboard |
+| 👍 Thumb out, flick right / left | Browser back / forward |
 
 The on-screen keyboard types into whatever field has focus — pinch-tap an input first,
 then peace-sign to summon the keyboard, hover a key and pinch to press. Shift, backspace,
