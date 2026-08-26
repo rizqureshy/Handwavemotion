@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Browse Chrome with hand gestures via your webcam: grab to scroll, pinch-spread to zoom, summon an on-screen keyboard and type.",
   "minimum_chrome_version": "114",
-  "permissions": ["sidePanel"],
+  "permissions": ["sidePanel", "scripting"],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },

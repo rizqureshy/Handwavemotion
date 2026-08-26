@@ -38,23 +38,30 @@ window.__hwState = { mode: 'idle', zoom: 1, targetTabId: null, kbd: false, pose:
 let landmarker = null;
 let camReady = false;
 let lastVideoTime = -1;
+let fileset = null;
+let delegateUsed = null;
+let detectFailures = 0;
+let rebuilding = false;
+
+const trackerOptions = (delegate) => ({
+  baseOptions: { modelAssetPath: 'vendor/hand_landmarker.task', delegate },
+  runningMode: 'VIDEO',
+  numHands: 2,
+  minHandDetectionConfidence: 0.4,
+  minHandPresenceConfidence: 0.4,
+  minTrackingConfidence: 0.4,
+});
 
 async function initTracking() {
   try {
     setStatus('loading hand tracker…');
-    const fileset = await FilesetResolver.forVisionTasks('vendor/tasks-vision/wasm');
-    const options = (delegate) => ({
-      baseOptions: { modelAssetPath: 'vendor/hand_landmarker.task', delegate },
-      runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.4,
-      minHandPresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
-    });
+    fileset = await FilesetResolver.forVisionTasks('vendor/tasks-vision/wasm');
     try {
-      landmarker = await HandLandmarker.createFromOptions(fileset, options('GPU'));
+      landmarker = await HandLandmarker.createFromOptions(fileset, trackerOptions('GPU'));
+      delegateUsed = 'GPU';
     } catch {
-      landmarker = await HandLandmarker.createFromOptions(fileset, options('CPU'));
+      landmarker = await HandLandmarker.createFromOptions(fileset, trackerOptions('CPU'));
+      delegateUsed = 'CPU';
     }
   } catch (err) {
     console.warn('hand tracker failed to load:', err);
@@ -62,6 +69,27 @@ async function initTracking() {
     return;
   }
   await initCamera();
+}
+
+// If GPU detection keeps throwing at runtime (some GPUs/side panels), rebuild
+// the tracker on the CPU delegate instead of failing silently every frame.
+async function fallBackToCpu() {
+  if (rebuilding || delegateUsed === 'CPU' || !fileset) return;
+  rebuilding = true;
+  setStatus('switching to CPU hand tracking…');
+  try {
+    const old = landmarker;
+    landmarker = null;
+    try { old?.close?.(); } catch { /* ignore */ }
+    landmarker = await HandLandmarker.createFromOptions(fileset, trackerOptions('CPU'));
+    delegateUsed = 'CPU';
+    detectFailures = 0;
+    if (camReady) setStatus('show a hand to the camera ✋');
+  } catch (err) {
+    console.warn('CPU tracker rebuild failed:', err);
+    setStatus('hand tracker failed', 'error');
+  }
+  rebuilding = false;
 }
 
 async function useStream(stream) {
@@ -175,6 +203,7 @@ async function getTargetTab() {
 }
 
 let unreachable = false;
+const injectionTried = new Set();
 async function sendToTab(msg) {
   const tab = await getTargetTab();
   if (!tab) return;
@@ -182,7 +211,19 @@ async function sendToTab(msg) {
     await chrome.tabs.sendMessage(tab.id, { hw: true, ...msg });
     unreachable = false;
   } catch {
-    unreachable = true; // chrome:// pages, web store, or tab not yet loaded
+    // No content script in this tab — it was open before the extension was
+    // (re)loaded. Inject it once and retry; only chrome:// and store pages
+    // are genuinely unreachable.
+    if (!injectionTried.has(tab.id)) {
+      injectionTried.add(tab.id);
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        await chrome.tabs.sendMessage(tab.id, { hw: true, ...msg });
+        unreachable = false;
+        return;
+      } catch { /* fall through */ }
+    }
+    unreachable = true;
   }
 }
 
@@ -418,7 +459,14 @@ function loop(now) {
     lastVideoTime = video.currentTime;
     try {
       hands = landmarker.detectForVideo(video, now).landmarks || [];
-    } catch { hands = []; }
+      detectFailures = 0;
+    } catch (err) {
+      hands = [];
+      if (++detectFailures === 20) {
+        console.warn('hand detection keeps failing:', err);
+        fallBackToCpu();
+      }
+    }
   } else if (landmarker && camReady) {
     hands = lastHands;
   }
