@@ -26,24 +26,32 @@ async function closeSelf() {
 
 async function attempt() {
   setHint('');
-  setStatus('Requesting camera access…');
+  setStatus('Requesting camera & microphone access…');
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setStatus('✅ Camera & microphone enabled — returning to the Handwave panel.', 'ok');
+    } catch (err) {
+      // no microphone on this machine: camera alone still enables gestures
+      if (err.name !== 'NotFoundError' && err.name !== 'OverconstrainedError') throw err;
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setStatus('✅ Camera enabled. No microphone was found — voice dictation won’t work.', 'ok');
+    }
     stream.getTracks().forEach((t) => t.stop());
-    setStatus('✅ Camera enabled — returning to the Handwave panel.', 'ok');
     chrome.runtime.sendMessage({ hw: true, t: 'camGranted' }).catch(() => {});
     setTimeout(closeSelf, 1400);
   } catch (err) {
     if (err.name === 'NotAllowedError') {
       const perm = await navigator.permissions.query({ name: 'camera' }).catch(() => null);
       if (perm?.state === 'denied') {
-        setStatus('Camera access is blocked for this extension.', 'error');
+        setStatus('Camera or microphone access is blocked for this extension.', 'error');
         setHint(
           'To unblock it:<br>' +
           '1. Click the <b>camera icon</b> (or the lock/tune icon) in the address bar of this tab.<br>' +
-          '2. Choose <b>“Always allow”</b> for the camera.<br>' +
+          '2. Choose <b>“Always allow”</b> for the camera and microphone.<br>' +
           '3. Press <b>Try again</b> below.<br><br>' +
-          'Alternatively: chrome://settings/content/camera → remove this extension from the “Not allowed” list.'
+          'Alternatively: chrome://settings/content/camera and …/microphone → remove this extension from the “Not allowed” list.'
         );
       } else {
         setStatus('Chrome is asking for permission — choose “Allow” in the prompt.', 'error');

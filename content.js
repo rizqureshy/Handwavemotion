@@ -1,28 +1,15 @@
-// Handwave content controller: renders the hand cursor and on-screen keyboard,
-// and executes scroll / click / type actions sent by the side panel.
-// All UI lives in a pointer-events:none shadow DOM overlay, so it never
-// intercepts real (or synthetic) page interaction.
+// Handwave content controller: renders the hand cursor, navigation flashes,
+// and the dictation bubble, and executes scroll / click / type actions sent by
+// the side panel. All UI lives in a pointer-events:none shadow DOM overlay, so
+// it never intercepts real (or synthetic) page interaction.
 (() => {
   if (window.__handwaveLoaded) return;
   window.__handwaveLoaded = true;
 
-  let host = null, shadow = null, cursorEl = null, kbdEl = null, navFlashEl = null;
+  let host = null, shadow = null, cursorEl = null, navFlashEl = null, dictEl = null, dictTextEl = null;
   let navFlashTimer = 0;
-  let kbdVisible = false;
-  let keyRects = [];        // {el, key, left, top, right, bottom}
-  let hoverKeyEl = null;
-  let shift = false;
   let lastEditable = null;
   let flingRaf = 0;
-
-  const KEY_ROWS = [
-    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'bksp'],
-    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
-    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'enter'],
-    ['shift', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.'],
-    ['hide', '@', 'space', '-', '/'],
-  ];
-  const KEY_LABELS = { bksp: '⌫', enter: '↵', shift: '⇧', hide: '✕', space: ' ' };
 
   function isEditable(el) {
     if (!el) return false;
@@ -76,35 +63,29 @@
         opacity: 0; transition: opacity 0.15s;
       }
       #navFlash.show { opacity: 1; }
-      #kbd {
-        position: fixed; z-index: 1; left: 50%; bottom: 20px; transform: translateX(-50%);
-        display: none; flex-direction: column; gap: 6px;
-        padding: 12px; border-radius: 16px;
-        background: rgba(8, 10, 22, 0.82);
-        border: 1px solid rgba(150, 170, 255, 0.28);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
-        backdrop-filter: blur(10px);
-        font-family: system-ui, sans-serif;
+      #dict {
+        position: fixed; z-index: 1; left: 50%; bottom: 24px; transform: translateX(-50%);
+        display: none; align-items: center; gap: 11px;
+        max-width: 72vw; padding: 11px 20px; border-radius: 999px;
+        background: rgba(8, 10, 22, 0.86);
+        border: 1px solid rgba(255, 95, 143, 0.55);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+        color: #dfe6ff; font: 14.5px system-ui, sans-serif;
+        backdrop-filter: blur(9px);
       }
-      #kbd.show { display: flex; }
-      .row { display: flex; gap: 6px; justify-content: center; }
-      .key {
-        min-width: 46px; height: 48px; padding: 0 8px;
-        display: flex; align-items: center; justify-content: center;
-        border-radius: 9px; border: 1px solid rgba(150, 170, 255, 0.22);
-        background: rgba(26, 30, 54, 0.9); color: #dfe6ff;
-        font-size: 17px; text-transform: none; user-select: none;
+      #dict.show { display: flex; }
+      #dict .mic {
+        flex: none; width: 11px; height: 11px; border-radius: 50%;
+        background: #ff5f8f; box-shadow: 0 0 10px rgba(255, 95, 143, 0.8);
+        animation: hwpulse 1.2s ease-in-out infinite;
       }
-      .key[data-key="space"] { min-width: 220px; }
-      .key[data-key="enter"], .key[data-key="bksp"], .key[data-key="shift"], .key[data-key="hide"] {
-        color: #9fb0d8; font-size: 15px;
+      #dict .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #dict .txt em { font-style: normal; opacity: 0.55; }
+      @keyframes hwpulse { 50% { transform: scale(1.5); opacity: 0.6; } }
+      @media (prefers-reduced-motion: reduce) {
+        #dict .mic { animation: none; }
+        #cursor.flash { animation: none; }
       }
-      .key.hover {
-        background: #35406e; border-color: #56d9ff; color: #fff;
-        box-shadow: 0 0 12px rgba(86, 217, 255, 0.45);
-      }
-      .key.press { background: #ff9ad5; color: #04050c; border-color: #ff9ad5; }
-      .key.on { border-color: #c9a2ff; color: #c9a2ff; }
     `;
     shadow.appendChild(style);
     cursorEl = document.createElement('div');
@@ -113,196 +94,16 @@
     navFlashEl = document.createElement('div');
     navFlashEl.id = 'navFlash';
     shadow.appendChild(navFlashEl);
-    buildKeyboard();
+    dictEl = document.createElement('div');
+    dictEl.id = 'dict';
+    const mic = document.createElement('span');
+    mic.className = 'mic';
+    dictTextEl = document.createElement('span');
+    dictTextEl.className = 'txt';
+    dictEl.append(mic, dictTextEl);
+    shadow.appendChild(dictEl);
     (document.documentElement || document.body).appendChild(host);
   }
-
-  function buildKeyboard() {
-    kbdEl = document.createElement('div');
-    kbdEl.id = 'kbd';
-    for (const row of KEY_ROWS) {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'row';
-      for (const key of row) {
-        const k = document.createElement('div');
-        k.className = 'key';
-        k.dataset.key = key;
-        k.textContent = KEY_LABELS[key] ?? key;
-        rowEl.appendChild(k);
-      }
-      kbdEl.appendChild(rowEl);
-    }
-    shadow.appendChild(kbdEl);
-  }
-
-  function refreshKeyLabels() {
-    for (const k of kbdEl.querySelectorAll('.key')) {
-      const key = k.dataset.key;
-      if (KEY_LABELS[key] !== undefined) continue;
-      k.textContent = shift ? key.toUpperCase() : key;
-    }
-    kbdEl.querySelector('[data-key="shift"]').classList.toggle('on', shift);
-  }
-
-  function computeKeyRects() {
-    keyRects = [];
-    for (const k of kbdEl.querySelectorAll('.key')) {
-      const r = k.getBoundingClientRect();
-      keyRects.push({ el: k, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
-    }
-  }
-  window.addEventListener('resize', () => { if (kbdVisible) computeKeyRects(); });
-
-  function showKeyboard(show) {
-    ensureUi();
-    kbdVisible = show;
-    kbdEl.classList.toggle('show', show);
-    if (show) computeKeyRects();
-    else setHover(null);
-  }
-
-  function setHover(el) {
-    if (hoverKeyEl === el) return;
-    hoverKeyEl?.classList.remove('hover');
-    hoverKeyEl = el;
-    hoverKeyEl?.classList.add('hover');
-  }
-
-  function setCursor(msg) {
-    ensureUi();
-    if (msg.mode === 'none') {
-      cursorEl.classList.remove('show');
-      setHover(null);
-      return;
-    }
-    const px = msg.x * window.innerWidth;
-    const py = msg.y * window.innerHeight;
-    cursorEl.style.left = `${px}px`;
-    cursorEl.style.top = `${py}px`;
-    cursorEl.className = `show ${['pinch', 'pinch2', 'grab'].includes(msg.mode) ? msg.mode : ''}`;
-    if (kbdVisible) {
-      const hit = keyRects.find((r) => px >= r.left && px <= r.right && py >= r.top && py <= r.bottom);
-      setHover(hit ? hit.el : null);
-    }
-  }
-
-  // ------------------------------------------------------------ typing
-  function target() {
-    if (lastEditable && lastEditable.isConnected) return lastEditable;
-    if (isEditable(document.activeElement)) return document.activeElement;
-    return null;
-  }
-
-  function manualInsert(el, text) {
-    if (el.isContentEditable) return;
-    const s = el.selectionStart ?? el.value.length;
-    const e = el.selectionEnd ?? el.value.length;
-    el.setRangeText(text, s, e, 'end');
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-  }
-
-  function typeChar(ch) {
-    const el = target();
-    if (!el) return;
-    el.focus();
-    if (!document.execCommand('insertText', false, ch)) manualInsert(el, ch);
-  }
-
-  function backspace() {
-    const el = target();
-    if (!el) return;
-    el.focus();
-    if (document.execCommand('delete', false)) return;
-    if (!el.isContentEditable) {
-      const s = el.selectionStart ?? el.value.length;
-      const e = el.selectionEnd ?? el.value.length;
-      if (s === e && s > 0) el.setRangeText('', s - 1, e, 'end');
-      else el.setRangeText('', s, e, 'end');
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
-    }
-  }
-
-  function pressEnter() {
-    const el = target();
-    if (!el) return;
-    el.focus();
-    if (el.tagName === 'TEXTAREA' || el.isContentEditable) {
-      if (!document.execCommand('insertText', false, '\n')) manualInsert(el, '\n');
-      return;
-    }
-    const opts = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
-    const canceled = !el.dispatchEvent(new KeyboardEvent('keydown', opts));
-    el.dispatchEvent(new KeyboardEvent('keyup', opts));
-    if (!canceled) el.closest('form')?.requestSubmit?.();
-  }
-
-  function activateKey(keyEl) {
-    const key = keyEl.dataset.key;
-    keyEl.classList.add('press');
-    setTimeout(() => keyEl.classList.remove('press'), 180);
-    if (key === 'shift') { shift = !shift; refreshKeyLabels(); return; }
-    if (key === 'hide') {
-      showKeyboard(false);
-      chrome.runtime.sendMessage({ hw: true, t: 'kbdClosed' }).catch(() => {});
-      return;
-    }
-    if (key === 'bksp') { backspace(); return; }
-    if (key === 'enter') { pressEnter(); return; }
-    const ch = key === 'space' ? ' ' : shift ? key.toUpperCase() : key;
-    typeChar(ch);
-    if (shift && key !== 'space') { shift = false; refreshKeyLabels(); }
-  }
-
-  // ------------------------------------------------------------ actions
-  function pressAt(msg) {
-    ensureUi();
-    cursorEl.classList.add('flash');
-    setTimeout(() => cursorEl.classList.remove('flash'), 260);
-    if (kbdVisible && hoverKeyEl) { activateKey(hoverKeyEl); return; }
-
-    const px = msg.x * window.innerWidth;
-    const py = msg.y * window.innerHeight;
-    const el = deepElementFromPoint(document, px, py);
-    if (!el) return;
-    const opts = { bubbles: true, cancelable: true, view: window, clientX: px, clientY: py };
-    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    if (isEditable(el)) { el.focus(); lastEditable = el; }
-    if (typeof el.click === 'function') el.click();
-    else el.dispatchEvent(new MouseEvent('click', opts));
-  }
-
-  // Right-click: full right-button event sequence ending in contextmenu.
-  // Pages with their own context menus respond; Chrome's native menu cannot
-  // be opened by page-dispatched events.
-  function rightClickAt(msg) {
-    ensureUi();
-    cursorEl.classList.add('flash');
-    setTimeout(() => cursorEl.classList.remove('flash'), 260);
-    if (kbdVisible && hoverKeyEl) return; // no right-click on the keyboard
-    const px = msg.x * window.innerWidth;
-    const py = msg.y * window.innerHeight;
-    const el = deepElementFromPoint(document, px, py);
-    if (!el) return;
-    const opts = {
-      bubbles: true, cancelable: true, view: window,
-      clientX: px, clientY: py, button: 2, buttons: 2,
-    };
-    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new MouseEvent('contextmenu', opts));
-    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-  }
-
-  // ---------------------------------------------------- scroll targeting
-  // A grab scrolls the scrollable component under the hand (piercing open
-  // shadow DOM and same-origin iframes), chaining leftover delta to ancestor
-  // scrollers and finally the window — like real touch scrolling. The target
-  // chain is resolved at grab start and locked for the whole drag.
-  let scrollSession = null; // {chain, win, t}
 
   function deepElementFromPoint(doc, x, y) {
     let el = doc.elementFromPoint(x, y);
@@ -314,6 +115,13 @@
     }
     return el;
   }
+
+  // ---------------------------------------------------- scroll targeting
+  // A grab scrolls the scrollable component under the hand (piercing open
+  // shadow DOM and same-origin iframes), chaining leftover delta to ancestor
+  // scrollers and finally the window — like real touch scrolling. The target
+  // chain is resolved at grab start and locked for the whole drag.
+  let scrollSession = null; // {chain, win, t}
 
   function resolveScrollSession(xf, yf) {
     let win = window, doc = document;
@@ -391,12 +199,117 @@
     flingRaf = requestAnimationFrame(tick);
   }
 
+  // ------------------------------------------------------------ typing
+  function target() {
+    if (lastEditable && lastEditable.isConnected) return lastEditable;
+    if (isEditable(document.activeElement)) return document.activeElement;
+    return null;
+  }
+
+  function manualInsert(el, text) {
+    if (el.isContentEditable) return;
+    const s = el.selectionStart ?? el.value.length;
+    const e = el.selectionEnd ?? el.value.length;
+    el.setRangeText(text, s, e, 'end');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  }
+
+  // Insert a dictated phrase, adding a joining space when the caret sits
+  // right after a non-space character.
+  function typeText(text) {
+    const el = target();
+    if (!el) return;
+    el.focus();
+    let t = text.replace(/\s+$/, '');
+    if (!t) return;
+    let needSpace = false;
+    if (!el.isContentEditable) {
+      const caret = el.selectionStart ?? el.value.length;
+      needSpace = caret > 0 && !/\s/.test(el.value[caret - 1] || '');
+    } else {
+      needSpace = !/(^|\s)$/.test(el.textContent || '');
+    }
+    if (needSpace && !/^\s/.test(t)) t = ' ' + t;
+    if (!document.execCommand('insertText', false, t)) manualInsert(el, t);
+  }
+
+  // ------------------------------------------------------------ actions
+  function pressAt(msg) {
+    ensureUi();
+    cursorEl.classList.add('flash');
+    setTimeout(() => cursorEl.classList.remove('flash'), 260);
+
+    const px = msg.x * window.innerWidth;
+    const py = msg.y * window.innerHeight;
+    const el = deepElementFromPoint(document, px, py);
+    if (!el) return;
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: px, clientY: py };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    const editable = isEditable(el);
+    if (editable) { el.focus(); lastEditable = el; }
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', opts));
+    // The panel starts dictation on editable targets, stops it elsewhere.
+    chrome.runtime.sendMessage({ hw: true, t: 'clicked', editable }).catch(() => {});
+  }
+
+  // Right-click: full right-button event sequence ending in contextmenu.
+  // Pages with their own context menus respond; Chrome's native menu cannot
+  // be opened by page-dispatched events.
+  function rightClickAt(msg) {
+    ensureUi();
+    cursorEl.classList.add('flash');
+    setTimeout(() => cursorEl.classList.remove('flash'), 260);
+    const px = msg.x * window.innerWidth;
+    const py = msg.y * window.innerHeight;
+    const el = deepElementFromPoint(document, px, py);
+    if (!el) return;
+    const opts = {
+      bubbles: true, cancelable: true, view: window,
+      clientX: px, clientY: py, button: 2, buttons: 2,
+    };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new MouseEvent('contextmenu', opts));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+  }
+
+  function setCursor(msg) {
+    ensureUi();
+    if (msg.mode === 'none') {
+      cursorEl.classList.remove('show');
+      return;
+    }
+    cursorEl.style.left = `${msg.x * window.innerWidth}px`;
+    cursorEl.style.top = `${msg.y * window.innerHeight}px`;
+    cursorEl.className = `show ${['pinch', 'pinch2', 'grab'].includes(msg.mode) ? msg.mode : ''}`;
+  }
+
+  function setDictation(msg) {
+    ensureUi();
+    if (msg.state === 'listening') {
+      dictEl.classList.add('show');
+      dictTextEl.innerHTML = '';
+      if (msg.interim) dictTextEl.textContent = msg.interim;
+      else {
+        const em = document.createElement('em');
+        em.textContent = 'listening — just talk, click elsewhere to stop';
+        dictTextEl.appendChild(em);
+      }
+    } else {
+      dictEl.classList.remove('show');
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg?.hw) return;
     switch (msg.t) {
       case 'cursor':
         setCursor(msg);
-        if (msg.kbd !== undefined && msg.kbd !== kbdVisible) showKeyboard(msg.kbd);
         break;
       case 'scroll':
         cancelFling();
@@ -411,8 +324,11 @@
       case 'press2':
         rightClickAt(msg);
         break;
-      case 'kbd':
-        showKeyboard(msg.show);
+      case 'type':
+        typeText(msg.text);
+        break;
+      case 'dict':
+        setDictation(msg);
         break;
       case 'navFlash':
         ensureUi();
@@ -424,6 +340,6 @@
         navFlashTimer = setTimeout(() => navFlashEl.classList.remove('show'), 600);
         break;
     }
-    sendResponse({ ok: true, kbd: kbdVisible });
+    sendResponse({ ok: true });
   });
 })();

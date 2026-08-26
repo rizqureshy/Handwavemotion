@@ -38,7 +38,7 @@ function setMode(text, active, hold = false) {
 // and observe the state machine without a camera.
 let injected = null;
 window.__hwInject = (hands) => { injected = { hands, t: performance.now() }; };
-window.__hwState = { mode: 'idle', zoom: 1, targetTabId: null, kbd: false, pose: '' };
+window.__hwState = { mode: 'idle', zoom: 1, targetTabId: null, dict: false, pose: '' };
 
 // ------------------------------------------------------------ hand tracking
 let landmarker = null;
@@ -305,13 +305,73 @@ async function sendToTab(msg) {
   }
 }
 
-// Messages from our other pages: the keyboard's ✕ key, and the grant page
-// reporting that the camera permission was just granted.
+// ------------------------------------------------------------- dictation
+// Speech-to-text runs here in the panel — the mic permission is granted once
+// for the extension origin — and recognized text streams to the page's
+// focused field. Uses Chrome's built-in Web Speech API.
+let recog = null;
+let dictOn = false;
+
+function startDictation() {
+  if (dictOn) return;
+  const SR = self.SpeechRecognition || self.webkitSpeechRecognition;
+  if (!SR) {
+    setStatus('speech recognition unavailable in this browser', 'error');
+    return;
+  }
+  recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = navigator.language || 'en-US';
+  recog.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) sendToTab({ t: 'type', text: r[0].transcript });
+      else interim += r[0].transcript;
+    }
+    sendToTab({ t: 'dict', state: 'listening', interim });
+  };
+  recog.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      stopDictation();
+      setStatus('microphone blocked — use “grant camera & mic access”', 'error');
+      grantBtn.style.display = 'inline-block';
+    }
+  };
+  recog.onend = () => {
+    // Chrome ends continuous sessions after silence; keep listening until
+    // dictation is explicitly stopped (small delay avoids a restart spin).
+    if (!dictOn) return;
+    setTimeout(() => {
+      if (dictOn && recog) { try { recog.start(); } catch { /* already running */ } }
+    }, 400);
+  };
+  try { recog.start(); } catch { /* concurrent start */ }
+  dictOn = true;
+  window.__hwState.dict = true;
+  sendToTab({ t: 'dict', state: 'listening', interim: '' });
+}
+
+function stopDictation() {
+  if (!dictOn && !recog) return;
+  dictOn = false;
+  window.__hwState.dict = false;
+  try { recog?.stop(); } catch { /* ignore */ }
+  recog = null;
+  sendToTab({ t: 'dict', state: 'off' });
+}
+
+// test hook: feed a "recognized" phrase through the typing pipeline
+window.__hwDictate = (text) => sendToTab({ t: 'type', text });
+
+// Messages from our other pages: content scripts reporting what was clicked,
+// and the grant page reporting that permissions were just granted.
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.hw) return;
-  if (msg.t === 'kbdClosed') {
-    kbdOn = false;
-    window.__hwState.kbd = false;
+  if (msg.t === 'clicked') {
+    if (msg.editable) startDictation();
+    else stopDictation();
   } else if (msg.t === 'camGranted' && !camReady) {
     // Reload rather than retry: a pending (never-rendered) permission prompt
     // in this document would queue any new getUserMedia call forever.
@@ -329,7 +389,6 @@ let zoom = { active: false, pending: false, baseDist: 0, baseZoom: 1, lastSent: 
 let peaceHeld = 0;
 let peaceArmed = true;
 let pressArmed = { l: true, r: true };
-let kbdOn = false;
 let lastHandSeen = 0;
 let swipeTrail = [];
 let cursorHist = [];
@@ -374,7 +433,7 @@ function resetInteractions(now) {
   cursorHist.length = 0;
   progressEl.style.width = '0%';
   if (now - lastHandSeen > 400) {
-    sendToTab({ t: 'cursor', mode: 'none', kbd: kbdOn });
+    sendToTab({ t: 'cursor', mode: 'none' });
     setMode('idle', false);
     window.__hwState.mode = 'idle';
   }
@@ -443,7 +502,7 @@ function step(classified, now, dt) {
     else if (zoom.active) applyZoom(dist, now);
     setMode(`zoom ${Math.round((zoom.current || 1) * 100)}%`, true);
     window.__hwState.mode = 'zoom';
-    sendToTab({ t: 'cursor', mode: 'none', kbd: kbdOn });
+    sendToTab({ t: 'cursor', mode: 'none' });
     return;
   }
   if (zoom.active || zoom.pending) { zoom.active = zoom.pending = false; }
@@ -464,15 +523,15 @@ function step(classified, now, dt) {
     }
   }
 
-  // ✌️ held still toggles the keyboard — nothing else shares this pose now
+  // ✌️ held still toggles voice dictation on/off (it also starts by itself
+  // when a pinch-click lands on a text field)
   if (stablePose === 'peace') {
     if (peaceArmed) {
       peaceHeld += dt;
       progressEl.style.width = `${Math.min(100, (peaceHeld / PEACE_HOLD_S) * 100)}%`;
       if (peaceHeld >= PEACE_HOLD_S) {
-        kbdOn = !kbdOn;
-        window.__hwState.kbd = kbdOn;
-        sendToTab({ t: 'kbd', show: kbdOn });
+        if (dictOn) stopDictation();
+        else startDictation();
         peaceArmed = false;
         progressEl.style.width = '0%';
       }
@@ -493,7 +552,7 @@ function step(classified, now, dt) {
       swipeTrail = [];
       navigateHistory(dir);
     }
-    sendToTab({ t: 'cursor', x: smoothed.palm.sx, y: smoothed.palm.sy, mode: 'point', kbd: kbdOn });
+    sendToTab({ t: 'cursor', x: smoothed.palm.sx, y: smoothed.palm.sy, mode: 'point' });
     setMode('flick ⇄ to navigate', true);
     window.__hwState.mode = 'navigate';
     return;
@@ -517,7 +576,7 @@ function step(classified, now, dt) {
       }
       scroll.last = { ...smoothed.palm, t: now };
     }
-    sendToTab({ t: 'cursor', x: smoothed.palm.sx, y: smoothed.palm.sy, mode: 'grab', kbd: kbdOn });
+    sendToTab({ t: 'cursor', x: smoothed.palm.sx, y: smoothed.palm.sy, mode: 'grab' });
     setMode('scroll', true);
     window.__hwState.mode = 'scroll';
     return;
@@ -554,9 +613,8 @@ function step(classified, now, dt) {
     x: frozen ? anchor.x : smoothed.tip.sx,
     y: frozen ? anchor.y : smoothed.tip.sy,
     mode: pinch2Now ? 'pinch2' : pinchNow ? 'pinch' : 'point',
-    kbd: kbdOn,
   });
-  const label = kbdOn ? 'keyboard' : stablePose === 'peace' ? 'keyboard…' : 'point';
+  const label = dictOn ? 'dictating 🎤' : stablePose === 'peace' ? 'dictation…' : 'point';
   setMode(label, true);
   window.__hwState.mode = label;
 }
